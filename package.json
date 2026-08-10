@@ -1,0 +1,16 @@
+{
+  "name": "phonecamera",
+  "version": "1.0.0",
+  "description": "Turn an iPhone into a Windows webcam via local WebRTC + OBS Browser Source. No app required.",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/manual-signaling-check.js"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "selfsigned": "^2.4.1",
+    "ws": "^8.18.0"
+  }
+}
