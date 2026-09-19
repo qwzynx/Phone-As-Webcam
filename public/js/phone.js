@@ -63,6 +63,38 @@
     videoInfoEl.classList.toggle('warn', portrait);
   }
 
+  // Browsers negotiate H.264 at level 3.1 (the "1f" in profile-level-id=42e01f),
+  // whose frame-size limit is 1280×720 @ 30fps - so the phone's hardware encoder
+  // (VideoToolbox on iOS) never sends 1080p. The receiver's level in the answer
+  // is what caps the sender, and with level-asymmetry-allowed it may be raised
+  // on its own; OBS's Chromium decodes far beyond it. 0x2a = level 4.2.
+  const MIN_H264_LEVEL = 0x2a;
+
+  function raiseH264Level(params) {
+    if (!/level-asymmetry-allowed=1/.test(params)) return params;
+    return params.replace(/profile-level-id=([0-9a-f]{4})([0-9a-f]{2})/i, (match, profile, level) =>
+      parseInt(level, 16) >= MIN_H264_LEVEL
+        ? match
+        : `profile-level-id=${profile}${MIN_H264_LEVEL.toString(16)}`);
+  }
+
+  // Phones encode H.264 in hardware, but Chrome offers VP8 first and encodes it
+  // in software, which can't keep up with 1080p30 and gets throttled. Putting
+  // H.264 first lets OBS pick it; OBS falls back to VP8 if it lacks H.264.
+  function preferH264(transceiver) {
+    if (!transceiver || !transceiver.setCodecPreferences ||
+        !window.RTCRtpReceiver || !RTCRtpReceiver.getCapabilities) return;
+    try {
+      const caps = RTCRtpReceiver.getCapabilities('video');
+      if (!caps) return;
+      const isH264 = (c) => c.mimeType.toLowerCase() === 'video/h264';
+      const codecs = caps.codecs.filter(isH264).concat(caps.codecs.filter((c) => !isH264(c)));
+      transceiver.setCodecPreferences(codecs);
+    } catch (err) {
+      console.warn('Could not prefer H.264', err);
+    }
+  }
+
   // libwebrtc (used by both Safari and Chrome) starts every call at ~300 kbps
   // and ramps up slowly; maxBitrate alone only raises the ceiling. These fmtp
   // hints on the answer make the phone's encoder start, and stay, high.
@@ -97,7 +129,7 @@
     out.forEach((line) => {
       const fmtp = line.match(/^a=fmtp:(\d+) (.*)$/);
       if (fmtp && videoPayloads.has(fmtp[1]) && !fmtp[2].includes('apt=')) {
-        result.push(`a=fmtp:${fmtp[1]} ${fmtp[2]};${hints}`);
+        result.push(`a=fmtp:${fmtp[1]} ${raiseH264Level(fmtp[2])};${hints}`);
         return;
       }
       result.push(line);
@@ -135,13 +167,18 @@
       console.warn('Could not apply encoder bitrate', err);
     }
     // Kept separate: some browsers reject this field, and it mustn't take the
-    // bitrate setting down with it.
-    try {
-      const params = sender.getParameters();
-      params.degradationPreference = 'maintain-resolution';
-      await sender.setParameters(params);
-    } catch (err) {
-      console.warn('degradationPreference not supported', err);
+    // bitrate setting down with it. 'maintain-framerate-and-resolution' stops
+    // the encoder trading away either one (on a LAN there's bandwidth to
+    // spare); 'maintain-resolution' alone let it drop well below 30fps.
+    for (const preference of ['maintain-framerate-and-resolution', 'maintain-resolution']) {
+      try {
+        const params = sender.getParameters();
+        params.degradationPreference = preference;
+        await sender.setParameters(params);
+        return;
+      } catch (err) {
+        console.warn(`degradationPreference '${preference}' not supported`, err);
+      }
     }
   }
 
@@ -205,7 +242,10 @@
 
     localStream.getTracks().forEach((track) => {
       tuneTrack(track);
-      pc.addTrack(track, localStream);
+      const sender = pc.addTrack(track, localStream);
+      if (track.kind === 'video') {
+        preferH264(pc.getTransceivers().find((t) => t.sender === sender));
+      }
     });
 
     pc.onicecandidate = (event) => {
