@@ -1,7 +1,10 @@
 html, body {
   margin: 0;
   overflow: hidden;
-  background: #000;
+  /* Transparent, not black: OBS Browser Sources composite the page's alpha, so
+     any area the phone's frame doesn't cover shows the scene underneath
+     instead of black bars. */
+  background: transparent;
   width: 100%;
   height: 100%;
 }
@@ -9,12 +12,11 @@ html, body {
 #remote-video {
   width: 100vw;
   height: 100vh;
-  /* "contain" keeps the phone's frame in its true proportions. "cover" filled
-     the Browser Source edge to edge, but did it by cropping whatever didn't
-     match the source's dimensions - so a 16:9 phone frame in a differently
-     sized OBS source lost its sides or its top and bottom. Any leftover space
-     is black, which OBS composites away cleanly. */
+  /* "contain" keeps the phone's frame in its true proportions rather than
+     cropping it to fill the Browser Source. When the frame's shape doesn't
+     match the source (e.g. a portrait frame in a 16:9 source) the leftover
+     space stays transparent, so no bars appear in the OBS scene. */
   object-fit: contain;
   display: block;
-  background: #000;
+  background: transparent;
 }
