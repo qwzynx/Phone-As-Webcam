@@ -10,6 +10,15 @@
     ? [{ urls: 'stun:stun.l.google.com:19302' }]
     : [];
 
+  // Capture/encode targets. The phone sits on the same LAN as the PC, so we can
+  // afford a far higher bitrate than WebRTC's conservative default, which is
+  // what made the OBS source look soft and blocky.
+  const TARGET_WIDTH = 1920;
+  const TARGET_HEIGHT = 1080;
+  const TARGET_ASPECT = TARGET_WIDTH / TARGET_HEIGHT;
+  const TARGET_FPS = 30;
+  const MAX_BITRATE = 12000000; // 12 Mbps
+
   let localStream = null;
   let pc = null;
   let signaling = null;
@@ -22,9 +31,43 @@
   function getVideoConstraints(facingMode, exact) {
     return {
       facingMode: exact ? { exact: facingMode } : facingMode,
-      width: { ideal: 1920 },
-      height: { ideal: 1080 }
+      width: { ideal: TARGET_WIDTH },
+      height: { ideal: TARGET_HEIGHT },
+      // Ask for 16:9 explicitly - a phone held upright otherwise hands back a
+      // portrait (or 4:3) frame, which OBS then has to crop or pillarbox.
+      aspectRatio: { ideal: TARGET_ASPECT },
+      frameRate: { ideal: TARGET_FPS },
+      // Prefer the sensor's own frame over a software-resampled/cropped one.
+      resizeMode: 'none'
     };
+  }
+
+  // 'detail' tells the encoder to protect resolution over framerate when it has
+  // to make a trade-off, which is the right call for a webcam feed.
+  function tuneTrack(track) {
+    if (track && track.kind === 'video') track.contentHint = 'detail';
+  }
+
+  // getUserMedia constraints only govern capture; the encoder has its own, much
+  // lower defaults, so raise them on the sender too.
+  async function tuneVideoSender(sender) {
+    if (!sender || !sender.track || sender.track.kind !== 'video') return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings.forEach((encoding) => {
+        encoding.active = true;
+        encoding.maxBitrate = MAX_BITRATE;
+        encoding.maxFramerate = TARGET_FPS;
+        encoding.scaleResolutionDownBy = 1;
+      });
+      params.degradationPreference = 'maintain-resolution';
+      await sender.setParameters(params);
+    } catch (err) {
+      // Older browsers reject unknown fields - the stream still works, just at
+      // the default bitrate.
+      console.warn('Could not apply encoder settings', err);
+    }
   }
 
   function sleep(ms) {
@@ -85,7 +128,10 @@
     closePeerConnection();
     pc = new RTCPeerConnection({ iceServers });
 
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    localStream.getTracks().forEach((track) => {
+      tuneTrack(track);
+      pc.addTrack(track, localStream);
+    });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -103,6 +149,11 @@
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+
+    // Only safe once the sender has been through setLocalDescription - before
+    // that, some browsers reject setParameters outright.
+    await Promise.all(pc.getSenders().map((sender) => tuneVideoSender(sender)));
+
     signaling.send({ type: 'offer', sdp: offer });
   }
 
@@ -196,10 +247,15 @@
     }
 
     const newTrack = newStream.getVideoTracks()[0];
+    tuneTrack(newTrack);
 
     if (pc) {
       const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) await sender.replaceTrack(newTrack);
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+        // replaceTrack can reset the encoding parameters, so re-apply them.
+        await tuneVideoSender(sender);
+      }
     }
 
     localStream = newStream;

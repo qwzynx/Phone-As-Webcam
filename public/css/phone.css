@@ -30,7 +30,9 @@ h1 {
   aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 12px;
-  object-fit: cover;
+  /* Match the OBS side: show the whole frame rather than a cropped centre, so
+     the preview is an honest picture of what's actually being sent. */
+  object-fit: contain;
 }
 
 #status {
