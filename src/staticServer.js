@@ -52,7 +52,12 @@ function createRequestHandler({ config = {} } = {}) {
         return;
       }
       const ext = path.extname(filePath);
-      res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+      res.writeHead(200, {
+        'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream',
+        // OBS's embedded browser caches aggressively; without this it keeps
+        // serving stale CSS/JS after an update until its cache is cleared.
+        'Cache-Control': 'no-cache'
+      });
       res.end(data);
     });
   };

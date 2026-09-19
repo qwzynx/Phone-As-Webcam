@@ -27,13 +27,12 @@ h1 {
 #preview {
   width: 100%;
   max-width: 480px;
-  /* Size the box to the frame's own proportions once the stream is running
-     (16:9 until then), so the preview never shows black bars beside a frame
-     of a different shape. */
-  aspect-ratio: auto 16 / 9;
+  aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 12px;
-  object-fit: contain;
+  /* Same framing as the OBS page, so the preview shows exactly what ends up
+     in the Virtual Camera. */
+  object-fit: cover;
 }
 
 #status {
