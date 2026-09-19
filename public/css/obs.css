@@ -18,3 +18,14 @@ html, body {
   object-fit: cover;
   display: block;
 }
+
+#stats {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  font: 14px/1.4 monospace;
+  color: #0f0;
+  background: rgba(0, 0, 0, 0.7);
+}

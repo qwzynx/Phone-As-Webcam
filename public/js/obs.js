@@ -10,6 +10,40 @@
   let pc = null;
   let signaling = null;
 
+  // Open /obs?stats in a normal browser to see what is actually arriving -
+  // resolution, framerate, bitrate and codec - instead of guessing from OBS.
+  const statsEl = new URLSearchParams(location.search).has('stats')
+    ? document.body.appendChild(document.createElement('pre'))
+    : null;
+  if (statsEl) statsEl.id = 'stats';
+  let lastBytes = 0;
+  let lastTime = 0;
+
+  async function updateStats() {
+    if (!statsEl) return;
+    if (!pc) {
+      statsEl.textContent = 'Waiting for phone...';
+      return;
+    }
+    const report = await pc.getStats();
+    let inbound = null;
+    report.forEach((s) => {
+      if (s.type === 'inbound-rtp' && s.kind === 'video') inbound = s;
+    });
+    if (!inbound) return;
+    const codec = inbound.codecId && report.get(inbound.codecId);
+    const now = inbound.timestamp;
+    const kbps = lastTime ? ((inbound.bytesReceived - lastBytes) * 8) / (now - lastTime) : 0;
+    lastBytes = inbound.bytesReceived;
+    lastTime = now;
+    statsEl.textContent =
+      `${inbound.frameWidth || '?'}×${inbound.frameHeight || '?'} ` +
+      `@ ${Math.round(inbound.framesPerSecond || 0)}fps\n` +
+      `${(kbps / 1000).toFixed(1)} Mbps  ${codec ? codec.mimeType : ''}\n` +
+      `page ${window.innerWidth}×${window.innerHeight}`;
+  }
+  if (statsEl) setInterval(updateStats, 1000);
+
   function closePeerConnection() {
     if (pc) {
       pc.close();

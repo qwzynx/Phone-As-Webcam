@@ -5,6 +5,7 @@
   const statusEl = document.getElementById('status');
   const preview = document.getElementById('preview');
   const cameraSelect = document.getElementById('camera-select');
+  const videoInfoEl = document.getElementById('video-info');
 
   const iceServers = (window.APP_CONFIG && window.APP_CONFIG.stun)
     ? [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -36,10 +37,78 @@
       // Ask for 16:9 explicitly - a phone held upright otherwise hands back a
       // portrait (or 4:3) frame, which OBS then has to crop or pillarbox.
       aspectRatio: { ideal: TARGET_ASPECT },
-      frameRate: { ideal: TARGET_FPS },
-      // Prefer the sensor's own frame over a software-resampled/cropped one.
-      resizeMode: 'none'
+      frameRate: { ideal: TARGET_FPS }
+      // No resizeMode: 'none' - it stops Chrome cropping to 16:9, so a camera
+      // whose native modes are 4:3 would stay 4:3.
     };
+  }
+
+  // What the camera actually delivered, which can differ a lot from what we
+  // asked for: iOS Safari ignores aspectRatio and hands back a portrait frame
+  // whenever the phone is held upright.
+  function updateVideoInfo() {
+    const w = preview.videoWidth;
+    const h = preview.videoHeight;
+    if (!w || !h) {
+      videoInfoEl.textContent = '';
+      return;
+    }
+    const settings = localStream && localStream.getVideoTracks()[0]
+      ? localStream.getVideoTracks()[0].getSettings()
+      : {};
+    const fps = settings.frameRate ? ` @ ${Math.round(settings.frameRate)}fps` : '';
+    const portrait = h > w;
+    videoInfoEl.textContent = `Sending ${w}×${h}${fps}` +
+      (portrait ? ' - rotate the phone to landscape for a full 16:9 picture' : '');
+    videoInfoEl.classList.toggle('warn', portrait);
+  }
+
+  // libwebrtc (used by both Safari and Chrome) starts every call at ~300 kbps
+  // and ramps up slowly; maxBitrate alone only raises the ceiling. These fmtp
+  // hints on the answer make the phone's encoder start, and stay, high.
+  function boostAnswerBitrate(sdp) {
+    const kbps = Math.round(MAX_BITRATE / 1000);
+    const lines = sdp.split('\r\n');
+    const out = [];
+    let inVideo = false;
+    const videoPayloads = new Set();
+
+    lines.forEach((line) => {
+      if (line.startsWith('m=')) {
+        inVideo = line.startsWith('m=video');
+        if (inVideo) line.split(' ').slice(3).forEach((pt) => videoPayloads.add(pt));
+      }
+      if (inVideo && line.startsWith('b=')) return; // replaced below
+      out.push(line);
+      if (inVideo && line.startsWith('c=')) out.push(`b=AS:${kbps}`);
+    });
+
+    const hints = `x-google-start-bitrate=${Math.round(kbps * 0.6)};` +
+      `x-google-min-bitrate=${Math.round(kbps * 0.25)};` +
+      `x-google-max-bitrate=${kbps}`;
+
+    const withFmtp = new Set();
+    out.forEach((line) => {
+      const m = line.match(/^a=fmtp:(\d+) /);
+      if (m) withFmtp.add(m[1]);
+    });
+
+    const result = [];
+    out.forEach((line) => {
+      const fmtp = line.match(/^a=fmtp:(\d+) (.*)$/);
+      if (fmtp && videoPayloads.has(fmtp[1]) && !fmtp[2].includes('apt=')) {
+        result.push(`a=fmtp:${fmtp[1]} ${fmtp[2]};${hints}`);
+        return;
+      }
+      result.push(line);
+      // Codecs like VP8 have no fmtp line at all - give them one.
+      const rtpmap = line.match(/^a=rtpmap:(\d+) ([^/]+)\//);
+      if (rtpmap && videoPayloads.has(rtpmap[1]) && !withFmtp.has(rtpmap[1]) &&
+          !/^(rtx|red|ulpfec|flexfec-03)$/i.test(rtpmap[2])) {
+        result.push(`a=fmtp:${rtpmap[1]} ${hints}`);
+      }
+    });
+    return result.join('\r\n');
   }
 
   // 'detail' tells the encoder to protect resolution over framerate when it has
@@ -61,12 +130,18 @@
         encoding.maxFramerate = TARGET_FPS;
         encoding.scaleResolutionDownBy = 1;
       });
+      await sender.setParameters(params);
+    } catch (err) {
+      console.warn('Could not apply encoder bitrate', err);
+    }
+    // Kept separate: some browsers reject this field, and it mustn't take the
+    // bitrate setting down with it.
+    try {
+      const params = sender.getParameters();
       params.degradationPreference = 'maintain-resolution';
       await sender.setParameters(params);
     } catch (err) {
-      // Older browsers reject unknown fields - the stream still works, just at
-      // the default bitrate.
-      console.warn('Could not apply encoder settings', err);
+      console.warn('degradationPreference not supported', err);
     }
   }
 
@@ -181,7 +256,12 @@
         }
         break;
       case 'answer':
-        if (pc) await pc.setRemoteDescription(message.sdp);
+        if (pc) {
+          await pc.setRemoteDescription({
+            type: message.sdp.type,
+            sdp: boostAnswerBitrate(message.sdp.sdp)
+          });
+        }
         break;
       case 'ice-candidate':
         if (pc) {
@@ -267,6 +347,10 @@
   cameraSelect.addEventListener('change', () => {
     if (localStream) switchCamera();
   });
+
+  // Fires on first frame and whenever the frame size changes (e.g. rotation).
+  preview.addEventListener('resize', updateVideoInfo);
+  preview.addEventListener('loadedmetadata', updateVideoInfo);
 
   startBtn.addEventListener('click', start);
   setStatus('Tap Start to share your camera');

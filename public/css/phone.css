@@ -70,3 +70,15 @@ h1 {
 #start-btn:disabled {
   background: #555;
 }
+
+#video-info {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.85rem;
+  text-align: center;
+  color: #8e8e93;
+}
+
+#video-info.warn {
+  color: #ffd60a;
+}
